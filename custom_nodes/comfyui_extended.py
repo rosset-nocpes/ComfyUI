@@ -14,7 +14,7 @@ routes = PromptServer.instance.routes
 
 
 def load_model(model_filename: str):
-    folder_path = "models/checkpoints"
+    folder_path = folder_paths.get_folder_paths("checkpoints")[0]
     model_filepath = os.path.join(folder_path, model_filename)
     if not os.path.exists(model_filepath):
         logging.error(f"Model file not found: {model_filepath}")
@@ -74,7 +74,7 @@ async def download_model(request):
             content_type="application/json",
         )
 
-    model_dir = "models/checkpoints"
+    model_dir = folder_paths.get_folder_paths("checkpoints")[0]
     filename = str(model_url).split("/")[len(str(model_url).split("/")) - 1]
     if not filename.endswith((".ckpt", ".safetensors")):
         logging.error(f"Invalid model filename extension: {filename}")

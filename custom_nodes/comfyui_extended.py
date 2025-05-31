@@ -2,13 +2,13 @@ import gc
 import logging
 import os
 
-from aiohttp import web
-from torchvision.datasets.utils import download_url
-
 import folder_paths
+import requests
+from aiohttp import web
 from comfy import model_management
 from comfy.sd import load_checkpoint_guess_config
 from server import PromptServer
+from torchvision.datasets.utils import download_url
 
 routes = PromptServer.instance.routes
 
@@ -32,33 +32,20 @@ def load_model(model_filename: str):
         return None
 
 
-# doesn't work
+def read_cgroup_value(path):
+    try:
+        with open(path, "r") as f:
+            value = f.read().strip()
+            if value == "max":
+                return float("inf")
+            return int(value)
+    except FileNotFoundError:
+        return None
+
+
 def unload_model(model_to_unload):
     """Unloads a specific model."""
-    try:
-        loaded = model_management.loaded_models()
-        # Compare the underlying model object
-        models_to_keep = [m for m in loaded if m.model != model_to_unload]
-        logging.info(f"Attempting to unload model: {model_to_unload}")
-        # Use a large memory_required to ensure the model is unloaded if it's not in models_to_keep
-        model_management.free_memory(
-            1e30, model_management.get_torch_device(), keep_loaded=models_to_keep
-        )
-        if model_to_unload not in [
-            m.model for m in model_management.current_loaded_models
-        ]:
-            logging.info(f"Successfully unloaded model: {model_to_unload}")
-        else:
-            logging.warning(
-                f"Model {model_to_unload} might not have been fully unloaded."
-            )
-
-        # It's good practice to soft_empty_cache after freeing memory
-        model_management.soft_empty_cache()
-        gc.collect()
-
-    except Exception as e:
-        logging.error(f"Error unloading model {model_to_unload}: {e}", exc_info=True)
+    requests.post("http://localhost:8188/free", {"unload_models": True})
 
 
 @routes.post("/models/download")
@@ -135,55 +122,22 @@ async def test_model(request):
             content_type="application/json",
         )
 
-    cpu_device = model_management.torch.device("cpu")
-    ram_total = model_management.get_total_memory(cpu_device)
-    ram_free = model_management.get_free_memory(cpu_device)
+    ram_total = read_cgroup_value("/sys/fs/cgroup/memory/memory.limit_in_bytes")
+    ram_used = read_cgroup_value("/sys/fs/cgroup/memory/memory.usage_in_bytes")
     vram_total = model_management.get_total_memory()
     vram_free = model_management.get_free_memory()
 
     system_stats = {
+        "model_dtype": str(model.model_dtype()),
         "model_size_on_disk_bytes": model.model_size(),
         "loaded_size_in_vram_bytes": model.loaded_size(),
-        "total_ram_bytes": ram_total,
-        "free_ram_bytes": ram_free,
-        "total_vram_bytes": vram_total,
-        "free_vram_bytes": vram_free,
+        "ram_total_bytes": ram_total,
+        "used_ram_bytes": ram_used,
         "used_vram_bytes": vram_total - vram_free,
     }
 
-    unload_model(model)
-
     return web.json_response(
         {"system_stats": system_stats},
-        status=200,
-        content_type="application/json",
-    )
-
-
-@routes.post("/models/load")
-async def post_load_model(request):
-    json_data = await request.json()
-
-    model_filename = json_data["model_filename"]
-    if not isinstance(model_filename, str):
-        logging.error(f"Invalid model_filename type: {type(model_filename)}")
-        return web.json_response(
-            {"code": 400, "message": "model_filename must be a string"},
-            status=400,
-            content_type="application/json",
-        )
-
-    model = load_model(model_filename)
-
-    if model is None:
-        return web.json_response(
-            {"code": 500, "message": f"Failed to load model: {model_filename}"},
-            status=500,
-            content_type="application/json",
-        )
-
-    return web.json_response(
-        {"code": 200, "message": f"Successfully loaded model: {model_filename}"},
         status=200,
         content_type="application/json",
     )
